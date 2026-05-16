@@ -1,23 +1,26 @@
-# Configuration for 16GB VRAM + 50k examples
-dataset = 'nepali'
-out_dir = 'out-nepali-50k'
+# Config for a 64M Parameter Nepali Model on 4GB VRAM
+dataset = 'nepali'         # Points to data/nepali/
+out_dir = 'out-nepali-64m'
 
-# Model Architecture
-n_layer = 12
-n_head = 12
-n_embd = 768
-block_size = 512
-vocab_size = 30522 # NepBERT
+# Architecture
+n_layer = 8
+n_head = 8
+n_embd = 512
+block_size = 256           # 256 tokens is perfect for short SFT Q&A
+vocab_size = 30522         # Matches NepBERT exactly
 
-# Hyperparameters for 50k dataset
-batch_size = 16            # Increased batch size for 16GB
-gradient_accumulation_steps = 4 # Effective batch size = 16 * 4 = 64
-learning_rate = 3e-4       # Standard LR for SFT
-max_iters = 15000          # ~3-5 epochs over 50k samples
-lr_decay_iters = 15000
-min_lr = 3e-5
+# Memory Optimization for RTX 3050 (4GB)
+batch_size = 2             # Micro-batch size 
+gradient_accumulation_steps = 32 # Effective batch size = 2 * 32 = 64
+
+# Hyperparameters for 50k SFT dataset
+learning_rate = 6e-4       # Slightly higher LR for a smaller model
+max_iters = 12000          # Gives ~3 passes over your 50k dataset
+lr_decay_iters = 12000
+min_lr = 6e-5
 beta2 = 0.95
+weight_decay = 0.1
 
-# Hardware settings
-dtype = 'bfloat16'
-compile = True             # Turn off if you encounter Windows C++ errors
+# Hardware settings for Windows
+dtype = 'bfloat16'         # Keeps memory footprint small
+compile = False            # Set to False on Windows to avoid startup VRAM spikes
