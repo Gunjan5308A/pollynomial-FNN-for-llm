@@ -78,6 +78,11 @@ exec(open('configurator.py').read()) # overrides from command line or config fil
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
+# --- ADD THIS BEFORE THE MAIN TRAINING LOOP ---
+iter_history = []
+train_loss_history = []
+val_loss_history = []
+
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
@@ -252,6 +257,27 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+
+def apply_local_polynomial_stabilizers(model, gamma=0.5, tau=1.0, beta=1.0):
+    """
+    Applies local constant scaling and exponential dampening to polynomial parameters.
+    """
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                # Target polynomial weights/biases and alpha coefficients
+                if 'poly_layer' in name or 'alpha' in name:
+                    
+                    # 1. Local Constant Gradient Scaling: g_poly <- gamma * g_poly
+                    param.grad.copy_(gamma * param.grad)
+                    
+                    # 2. Local Exponential Gradient Control
+                    local_norm = torch.norm(param.grad, p=2)
+                    if local_norm > tau:
+                        # Scale down exponentially based on the threshold violation magnitude
+                        scale = torch.exp(-beta * (local_norm - tau))
+                        param.grad.copy_(param.grad * scale)
+
 while True:
 
     # determine and set the learning rate for this iteration
@@ -262,7 +288,12 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
+        
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        iter_history.append(iter_num)
+        train_loss_history.append(losses['train'])
+        val_loss_history.append(losses['val'])
+        
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
@@ -304,15 +335,31 @@ while True:
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
+# --- PAPERS' DUAL-ACTION STABILIZATION MECHANISM ---
+    
+    # 1. First, unscale gradients so we work with true mathematical magnitudes
+    scaler.unscale_(optimizer)
+    
+    # 2. Apply Micro-Level Local Poly Stabilizers (Constant Scaling & Exponential Control)
+    # Matches gamma ~ 0.5 from the paper architecture
+    apply_local_polynomial_stabilizers(
+        model=model, 
+        gamma=0.5,  # Local constant scaling factor
+        tau=1.0,    # Strict localized step ceiling threshold
+        beta=1.0    # Tuning hyperparameter regulating intensity
+    )
+    
+    # 3. Macro-Level Global Norm-Based Gradient Clipping
+    # Automatically tracks and bounds macro-level anomalies to a threshold of 1.0
     if grad_clip != 0.0:
-        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    # step the optimizer and scaler if training in fp16
+        
+    # Step the optimizer using the stabilized parameters
     scaler.step(optimizer)
     scaler.update()
-    # flush the gradients as soon as we can, no need for this memory anymore
+    
+    # Flush the gradients safely
     optimizer.zero_grad(set_to_none=True)
-
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
@@ -329,8 +376,19 @@ while True:
     local_iter_num += 1
 
     # termination conditions
+    # termination conditions
     if iter_num > max_iters:
+        # Save a final copy before exiting the application environment
+        if master_process and len(iter_history) > 0:
+            import matplotlib.pyplot as plt
+            plt.plot(iter_history, train_loss_history, label='Train Loss', color='r')
+            plt.plot(iter_history, val_loss_history, label='Val Loss', color='b')
+            plt.legend()
+            plt.xlabel('Iterations')
+            plt.ylabel('Loss')
+            plt.title('Training and Validation Loss Curves')
+            plt.savefig('loss_curve.png', dpi=300)
+            plt.close()
         break
-
 if ddp:
     destroy_process_group()

@@ -75,8 +75,43 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-class MLP(nn.Module):
+class PolyFFN(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        d_model = config.n_embd
+        
+        # Degree-specific parameter mappings for lanes d=1, 2, 3 [cite: 34, 37]
+        self.poly_layer_1 = nn.Linear(d_model, d_model)
+        self.poly_layer_2 = nn.Linear(d_model, d_model)
+        self.poly_layer_3 = nn.Linear(d_model, d_model)
+        
+        # Learnable scalar vector coefficient alpha_k [cite: 38]
+        self.alpha = nn.Parameter(torch.randn(d_model) * 0.02)
+        
+        # Final projection layer back to the residual stream [cite: 42]
+        self.proj = nn.Linear(d_model, d_model)
 
+    def forward(self, x):
+        # Multi-lane feature generation [cite: 34]
+        x1 = x
+        x2 = torch.pow(x, 2)
+        x3 = torch.pow(x, 3)
+        
+        # Apply degree-specific weights and biases [cite: 37]
+        out1 = self.poly_layer_1(x1)
+        out2 = self.poly_layer_2(x2)
+        out3 = self.poly_layer_3(x3)
+        
+        # Non-linear modulation trajectory processing [cite: 38]
+        psi_alpha = torch.tanh(self.alpha)
+        
+        # Element-wise summation of all pathways [cite: 40]
+        f_poly = out1 + out2 + out3 + psi_alpha
+        
+        return self.proj(f_poly)
+
+
+class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
@@ -92,13 +127,14 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        
+        # --- FIX HERE: Point this to PolyFFN instead of MLP ---
+        self.mlp = PolyFFN(config) 
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
