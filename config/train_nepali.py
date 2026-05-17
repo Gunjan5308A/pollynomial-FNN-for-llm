@@ -21,3 +21,7 @@ beta2 = 0.95
 # Hardware settings
 dtype = 'bfloat16'
 compile = True             # Turn off if you encounter Windows C++ errors
+
+log_interval = 10
+eval_interval = 100
+eval_iters = 150
