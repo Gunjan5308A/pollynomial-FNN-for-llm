@@ -252,6 +252,12 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+
+iter_history = []
+train_loss_history = []
+val_loss_history = []
+
+
 while True:
 
     # determine and set the learning rate for this iteration
@@ -263,6 +269,9 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        iter_history.append(iter_num)
+        train_loss_history.append(losses['train'])
+        val_loss_history.append(losses['val'])
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
@@ -330,6 +339,16 @@ while True:
 
     # termination conditions
     if iter_num > max_iters:
+        if master_process and len(iter_history) > 0:
+            import matplotlib.pyplot as plt
+            plt.plot(iter_history, train_loss_history, label='Train Loss', color='r')
+            plt.plot(iter_history, val_loss_history, label='Val Loss', color='b')
+            plt.legend()
+            plt.xlabel('Iterations')
+            plt.ylabel('Loss')
+            plt.title('Training and Validation Loss Curves')
+            plt.savefig('loss_curve.png', dpi=300)
+            plt.close()
         break
 
 if ddp:
